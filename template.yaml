@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "ECS Setup using Fargate"
+
+Parameters:
+   
+    ServiceName:
+      Description: ECS Service Name
+      Type: String
+      Default: default-service
+
+    HostedZoneResource:
+      Description: Hosted Zone Name
+      Type: String
+      Default: example.com.
+
+    ENV:
+      Description: Environment
+      Type: String
+      Default: stage
+
+    AppName:
+      Description: Your Application Name
+      Type: String
+      Default: theawslab
+      
+Resources:
+
+  #ECS cluster creation
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties: 
+      ClusterName: !Join ['-', [!Ref ENV, !Ref AppName,'cluster']]
+
+  #Create Access Role for ECS-Tasks
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref ENV, !Ref AppName, 'taskexecution-role']]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+  # Create a TaskDefinition with container details
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Join ['-', [!Ref ENV, !Ref ServiceName, 'td']]
+      Memory: 512
+      Cpu: 256
+      NetworkMode: 'awsvpc'
+      RequiresCompatibilities:
+        - 'FARGATE'
+      TaskRoleArn: !Ref ExecutionRole
+      ExecutionRoleArn: !Ref ExecutionRole
+      ContainerDefinitions:
+        - Name: !Join ['-', [!Ref ENV, 'Container']]
+          Image: httpd:latest #!Ref ImageURI
+          Memory: 512
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref 'CloudwatchLogsGroup'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs-demo-app
+          PortMappings:
+            - ContainerPort: '80' #!Ref ContainerPort
+    
+  # Log configuration for container
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['-', [!Ref ENV, 'ECSLogGroup', !Ref 'ServiceName']]
+      RetentionInDays: 14
+
+  #ECS Security Group:
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ['-', [!Ref ENV, !Ref AppName,'ecs-sg']]
+      GroupDescription: ECS Security Group
+      VpcId: 
+        Fn::ImportValue:
+           !Join ["-", [!Ref ENV,"vpc"]]
+
+  #Security Group Inbound Rules
+  EcsSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupSSHinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '22'
+      ToPort: '22'
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBports:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '1024
+      ToPort: '65535'
+      CidrIp: 
+        Fn::ImportValue:
+           !Join ["-", [!Ref ENV,"cidr"]]
+      # SourceSecurityGroupId: !Ref 'EcsSecurityGroup'
+
+
+  # ECS Application Load Balancer
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Join ['-', [!Ref ENV, !Ref AppName,'alb']]
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets: 
+        - Fn::ImportValue: 
+            !Join ["-", [!Ref ENV,"public-subnet-a"]]
+        - Fn::ImportValue: 
+            !Join ["-", [!Ref ENV,"public-subnet-b"]]
+      SecurityGroups: 
+        - !Ref EcsSecurityGroup
+
+  
+  #ECS ALB Listener Rule
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      LoadBalancerArn: !Ref 'ECSALB'
+      Port: '80'
+      Protocol: HTTP
+
+  
+  #ECS ALB Target Group
+  ECSTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: ECSALB
+    Properties:
+      TargetType: ip
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref ENV, !Ref AppName,'target-group']]
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue:
+          !Join ["-", [!Ref ENV,"vpc"]]
+
+
+  #ECS Service
+  HttpService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Join ['-', [!Ref ENV, !Ref ServiceName]]
+      Cluster: !Ref 'ECSCluster'
+      DeploymentConfiguration:
+        MaximumPercent: '200'
+        MinimumHealthyPercent: '0'
+      LaunchType: FARGATE
+      DesiredCount: '1'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - Fn::ImportValue:
+                !Join ["-", [!Ref ENV,"private-subnet-a"]]
+            - Fn::ImportValue:
+               !Join ["-", [!Ref ENV,"private-subnet-b"]]
+          SecurityGroups: 
+            - !Ref 'EcsSecurityGroup'
+      LoadBalancers:
+      - ContainerName: !Join ['-', [!Ref ENV, 'Container']]
+        ContainerPort: '80'
+        TargetGroupArn: !Ref 'ECSTG'
+      #Role: !Ref 'ECSServiceRole'
+      TaskDefinition: !Ref 'TaskDefinition'
+
+  #ECS Service Role
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ['-', [!Ref ENV, !Ref AppName, 'ecsservice-role']]
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['elasticloadbalancing:DeregisterInstancesFromLoadBalancer', 'elasticloadbalancing:DeregisterTargets',
+              'elasticloadbalancing:Describe*', 'elasticloadbalancing:RegisterInstancesWithLoadBalancer',
+              'elasticloadbalancing:RegisterTargets', 'ec2:Describe*', 'ec2:AuthorizeSecurityGroupIngress']
+            Resource: '*'
+
+  #Route53 DNS
+  ECSHostName:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Ref HostedZoneResource
+      Comment: DNS name for my backend.
+      Name: !Join ['.', [!Join ['-',[!Ref ENV, 'backend']], !Ref HostedZoneResource]]
+      Type: CNAME
+      TTL: '60'
+      ResourceRecords:
+      - !GetAtt ECSALB.DNSName
+
+Outputs:
+
+  BackendDNS:
+      Description: Backend Application endpoint
+      Value: !Ref ECSHostName
+      Export:
+        Name: !Join ["-", [!Ref ENV,"backend-endpoint"]]
