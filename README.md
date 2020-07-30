@@ -1,6 +1,9 @@
 # aws-ecs-fargate-template
 Use this template to setup ecs fargate on aws using cloudformation
 
+## Licence:
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
 ## Usage Instructions:
 
 ### Variables
