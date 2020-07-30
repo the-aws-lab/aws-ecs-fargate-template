@@ -1,5 +1,16 @@
-# aws-ecs-fargate-template
+# Launch AWS Fargate using CloudFormation
 Use this template to setup ecs fargate on aws using cloudformation
+
+This template will deploy the following resources:
+- IAM Role
+- CloudWatch Log Group
+- ECS Security Group
+- Application Load Balancer
+- Target Group
+- ECS Cluster
+- ECS Task Definition
+- ECS Service
+- Route53 Record Set
 
 ## Licence:
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
